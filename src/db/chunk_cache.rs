@@ -1,50 +1,75 @@
 use std::collections::{HashMap};
-use std::sync::{Mutex, Arc};
+use std::sync::Arc;
 use bytes::Bytes;
 use futures::future::{Shared, BoxFuture};
 use futures::FutureExt;
+use lru::LruCache;
+use parking_lot::{Mutex};
 
 use super::{PageIndex, FileStore, RetrieveError};
 
 const CACHE_SHARDS: usize = 64;
 
-type SharedLoad = Shared<BoxFuture<'static, Result<Bytes, RetrieveError>>>;
+type SharedLoad<'l> = Shared<BoxFuture<'l, Result<Bytes, RetrieveError>>>;
 
-pub struct ChunkCache {
-    store: Arc<FileStore>,
-    shards: [Mutex<HashMap<PageIndex, SharedLoad>>; CACHE_SHARDS]
+struct CacheShard<'l> {
+    cache: Mutex<LruCache<PageIndex, Bytes>>,
+    loads: Mutex<HashMap<PageIndex, SharedLoad<'l>>>
 }
 
-impl ChunkCache {
-    pub fn get(&self, idx: PageIndex, overflow_size_hint: u32) -> SharedLoad {
-        let cache_shard = unsafe { self.shards.get_unchecked(idx as usize % CACHE_SHARDS) };
-        let mut cache_shard = cache_shard.lock().unwrap();
-
-        match cache_shard.get(&idx) {
-            Some(future) if use_cached_load(future) => {
-                future.clone()
-            },
-            _ => {
-                let store = self.store.clone();
-                let future = async move {
-                    store.get_chunk(idx, overflow_size_hint).await
-                }.boxed().shared();
-                cache_shard.insert(idx, future.clone());
-                future
-            }
+impl<'l> CacheShard<'l> {
+    fn new(cache_shard_size: usize) -> CacheShard<'l> {
+        CacheShard {
+            cache: Mutex::new(LruCache::new(cache_shard_size)),
+            loads: Mutex::new(HashMap::new())
         }
+    }
+
+    pub async fn get(&'l self, store: Arc<FileStore>, idx: PageIndex, overflow_size_hint: u32) -> Result<Bytes, RetrieveError> {
+        if let Some(cached) = self.cache.lock().get(&idx) { return Ok(cached.clone()) };
+
+        let mut loads = self.loads.lock();
+
+        if let Some(in_progress) = loads.get(&idx) {
+            let in_progress: SharedLoad = in_progress.clone().clone();
+
+            std::mem::drop(loads);
+
+            return in_progress.await;
+        }
+
+        let future = async move {
+            let res = store.get_chunk(idx, overflow_size_hint).await;
+
+            if let Ok(data) = res.clone() { self.cache.lock().put(idx, data); };
+            self.loads.lock().remove(&idx);
+
+            res
+        }.boxed().shared();
+
+        loads.insert(idx, future.clone());
+
+        std::mem::drop(loads);
+
+        future.await
     }
 }
 
-/// Only use a cached load if it's still pending or if the result is okay.
-fn use_cached_load<'f>(load: &SharedLoad) -> bool {
-    match load.peek() {
-        Some(a) => {
-            let b: Result<Bytes, RetrieveError> = a.clone();
-            b.is_ok()
-        },
-        None => {
-            true
+pub struct ChunkCache<'l> {
+    store: Arc<FileStore>,
+    shards: [CacheShard<'l>; CACHE_SHARDS]
+}
+
+impl<'l> ChunkCache<'l> {
+    pub fn new(store: FileStore, cache_shard_size: usize) -> &'l ChunkCache<'l> {
+        &ChunkCache {
+            store: Arc::new(store),
+            shards: [CacheShard::new(cache_shard_size); CACHE_SHARDS]
         }
+    }
+
+    pub async fn get(&'l self, idx: PageIndex, overflow_size_hint: u32) -> Result<Bytes, RetrieveError> {
+        let cache_shard = unsafe { self.shards.get_unchecked(idx as usize % CACHE_SHARDS) };
+        cache_shard.get(self.store.clone(), idx, overflow_size_hint).await
     }
 }
