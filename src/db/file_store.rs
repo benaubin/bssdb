@@ -51,10 +51,10 @@ pub struct FileStoreTransaction<'w> {
     prior_page_n: u64
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum RetrieveError {
     #[error("{0}")]
-    Io(#[source] #[from] io::Error),
+    Io(#[source] #[from] Arc<io::Error>),
     #[error("Bad checksum")]
     BadChecksum,
     #[error("Ran out of pages to read")]

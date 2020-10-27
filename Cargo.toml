@@ -9,7 +9,6 @@ edition = "2018"
 [dependencies]
 libc = "0.2.80"
 rio = "0.9.4"
-lru = "0.6.0"
 futures = "0.3.7"
 bytes = "0.6.0"
 crc32fast = "1.2.1"
