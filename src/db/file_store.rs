@@ -170,7 +170,7 @@ fn lock_file_for_writing(file: &File) -> io::Result<()> {
     let status = unsafe { libc::flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
     match status {
         0 => Ok(()),
-        1 => Err(io::Error::last_os_error())
+        _ => Err(io::Error::last_os_error())
     }
 }
 
