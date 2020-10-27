@@ -3,17 +3,22 @@ use std::{
     io,
     path::Path,
     fs::{OpenOptions, File},
-    os::unix::fs::OpenOptionsExt,
+    os::unix::{
+        fs::OpenOptionsExt,
+        io::AsRawFd
+    },
     convert::TryInto,
     sync::{Arc, atomic::AtomicU64, atomic}
 };
-
 use crc32fast::Hasher;
 use bytes::{Bytes, Buf, BufMut};
 use thiserror::Error;
 
 #[cfg(target_os = "linux")]
 use rio::Rio;
+
+#[cfg(target_family = "unix")]
+use libc::{LOCK_NB, LOCK_EX};
 
 use super::{PageIndex};
 
@@ -160,6 +165,15 @@ impl<'w> FileStoreTransaction<'w> {
     }
 }
 
+#[cfg(target_family="unix")]
+fn lock_file_for_writing(file: &File) -> io::Result<()> {
+    let status = unsafe { libc::flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
+    match status {
+        0 => Ok(()),
+        1 => Err(io::Error::last_os_error())
+    }
+}
+
 impl FileStore {
     pub async fn open<'a, P: AsRef<Path>>(path: P) -> io::Result<(Arc<FileStore>, FileStoreWriter)> {
         let mut file = OpenOptions::new();
@@ -172,6 +186,8 @@ impl FileStore {
         file.custom_flags(libc::O_DIRECT);
         
         let file = file.open(path)?;
+        
+        lock_file_for_writing(&file)?;
 
         let len = file.metadata()?.len();
         let page_len = len / (PAGE_SIZE as u64);
