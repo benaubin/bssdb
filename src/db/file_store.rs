@@ -15,15 +15,7 @@ use thiserror::Error;
 #[cfg(target_os = "linux")]
 use rio::Rio;
 
-// Each key-value pair is up-to 256 bytes in the main page cache
-//
-// First byte = entry length
-// Second byte = key length
-// Second byte = value length
-// 1-256 bytes = key
-
 use super::{PageIndex};
-
 
 #[repr(align(4096))]
 #[repr(C)]
@@ -46,13 +38,12 @@ pub struct FileStore {
     ring: Rio,
 }
 
-pub struct FileStoreWriter {
-    store: Arc<FileStore>,
-    uncommitted_pages: Vec<Page>,
-}
+pub struct FileStoreWriter(Arc<FileStore>);
 
-struct ChunkWritter {
-    pages: Vec<Page>
+pub struct FileStoreTransaction<'w> {
+    writer: &'w mut FileStoreWriter,
+    uncommitted_pages: Vec<Page>,
+    prior_page_n: u64
 }
 
 #[derive(Error, Debug)]
@@ -85,6 +76,19 @@ impl PageVec for Vec<Page> {
 }
 
 impl FileStoreWriter {
+    pub fn tx<'s>(&'s mut self) -> FileStoreTransaction<'s> {
+        FileStoreTransaction {
+            writer: self,
+            uncommitted_pages: vec![],
+            prior_page_n: self.0.page_len.load(atomic::Ordering::SeqCst)
+        }
+    }
+}
+
+impl<'w> FileStoreTransaction<'w> {
+    /// Get the file store we're attached to
+    #[inline(always)] pub fn store(&self) -> &FileStore { &self.writer.0 }
+    
     /// Append a chunk to uncommited writes
     ///
     /// Returns page index and number of overflow pages
@@ -97,7 +101,7 @@ impl FileStoreWriter {
 
         let overflow_pages = (n_pages - 1).try_into().expect("chunk may only have 2^32 pages");
 
-        let first_page_index = self.store.page_len + (self.uncommitted_pages.len() as u64);
+        let first_page_index = self.prior_page_n + (self.uncommitted_pages.len() as u64);
 
         self.uncommitted_pages.reserve(n_pages);
 
@@ -125,84 +129,62 @@ impl FileStoreWriter {
         (first_page_index, overflow_pages)
     }
     
-    /// Commit writes
-    pub async fn commit(&mut self) -> Result<(), PageWriteError> {
+    /// Commit pages
+    pub async fn commit(self) -> Result<(), PageWriteError> {
         let n_pages = self.uncommitted_pages.len();
         assert!(n_pages > 0);
 
         let bytes = self.uncommitted_pages.borrow_bytes();
 
-        let existing_len = self.store.page_len.load(atomic::Ordering::SeqCst);
+        let existing_len = self.store().page_len.load(atomic::Ordering::SeqCst);
         
         let starting_pos = existing_len * (PAGE_SIZE as u64);
         let mut total_written = 0;
 
         while bytes.len() > total_written {
-            #[cfg(target_os = "linux")] {
+            let written = if cfg!(target_os = "linux") {
                 // TODO check if this write is safe and aligned correctly
-                let written = self.store.ring.write_at(&self.store.file, &&bytes[total_written..], starting_pos + (total_written as u64)).await?;
-                total_written += written;
-            }
-            #[cfg(not(target_os = "linux"))] { compile_error!("only linux writing is supported") }
+                self.store().ring.write_at(&self.store().file, &&bytes[total_written..], starting_pos + (total_written as u64)).await?
+            } else {
+                #[cfg(not(target_os = "linux"))] compile_error!("only linux writing is supported");
+                unreachable!();
+            };
+            
+            total_written += written;
         }
 
-        self.store.ring.fsync_ordered(&self.store.file, rio::Ordering::Drain).await?;
-
-        self.store.page_len.store(existing_len + (n_pages as u64), atomic::Ordering::SeqCst);
-
-        self.uncommitted_pages = vec![];
-
-        Ok(())
-    }
-
-    // Rollback changes & prepare for reuse
-    pub async fn rollback(&mut self) -> Result<(), PageWriteError> {
-        self.uncommitted_pages = vec![];
+        self.store().ring.fsync_ordered(&self.store().file, rio::Ordering::Drain).await?;
+        self.store().page_len.store(existing_len + (n_pages as u64), atomic::Ordering::SeqCst);
 
         Ok(())
     }
 }
 
 impl FileStore {
-    #[cfg(target_os = "linux")]
-    pub async fn open_readonly<'a, P: AsRef<Path>>(path: P) -> io::Result<FileStore> {
-        let ring = rio::new()?;
-        
-        let file = OpenOptions::new()
-            .read(true)
-            .write(false)
-            .create(false)
-            .custom_flags(libc::O_DIRECT)
-            .open(path)?;
-
-        let len = file.metadata()?.len();
-        let page_len = len / (PAGE_SIZE as u64);
-
-        let store = FileStore { file, ring, page_len: AtomicU64::new(page_len) };
-
-        Ok(store)
-    }
-
-    #[cfg(target_os = "linux")]
     pub async fn open<'a, P: AsRef<Path>>(path: P) -> io::Result<(Arc<FileStore>, FileStoreWriter)> {
-        let ring = rio::new()?;
-        
-        let file = OpenOptions::new()
-            .read(true)
+        let mut file = OpenOptions::new();
+
+        file.read(true)
             .write(true)
-            .create(true)
-            .custom_flags(libc::O_DIRECT)
-            .open(path)?;
+            .create(true);
+
+        #[cfg(target_os = "linux")]
+        file.custom_flags(libc::O_DIRECT);
+        
+        let file = file.open(path)?;
 
         let len = file.metadata()?.len();
         let page_len = len / (PAGE_SIZE as u64);
         file.set_len(page_len * (PAGE_SIZE as u64));
 
-        let store = Arc::new(FileStore { file, ring, page_len: AtomicU64::new(page_len) });
-        let writer = FileStoreWriter { 
-            store: store.clone(),
-            uncommitted_pages: vec![]
-        };
+        let store = Arc::new(FileStore {
+            file,
+            #[cfg(target_os = "linux")]
+            ring: rio::new()?,
+            page_len: AtomicU64::new(page_len)
+        });
+
+        let writer = FileStoreWriter(store.clone());
 
         Ok((store, writer))
     }
