@@ -1,0 +1,16 @@
+[package]
+name = "bssdb"
+version = "0.1.0"
+authors = ["Ben Aubin <ben@benaubin.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+libc = "0.2.80"
+rio = "0.9.4"
+lru = "0.6.0"
+futures = "0.3.7"
+bytes = "0.6.0"
+crc32fast = "1.2.1"
+thiserror = "1.0.21"
