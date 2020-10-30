@@ -55,14 +55,14 @@ impl<'l> CacheShard<'l> {
     }
 }
 
-pub struct ChunkCache<'l> {
+pub struct PageCache<'l> {
     store: Arc<FileStore>,
     shards: [CacheShard<'l>; CACHE_SHARDS]
 }
 
-impl<'l> ChunkCache<'l> {
-    pub fn new(store: FileStore, cache_shard_size: usize) -> &'l ChunkCache<'l> {
-        &ChunkCache {
+impl<'l> PageCache<'l> {
+    pub fn new(store: FileStore, cache_shard_size: usize) -> &'l PageCache<'l> {
+        &PageCache {
             store: Arc::new(store),
             shards: [CacheShard::new(cache_shard_size); CACHE_SHARDS]
         }
