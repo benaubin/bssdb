@@ -1,6 +1,6 @@
 # BSSDB
 
-An embedded database library for KV databases, designed for modern hardware, distributed systems and data with natural sharding.
+An embedded KV database library, designed for modern hardware, distributed systems and data with natural sharding.
 
 This is an extremely early stage, without any tests or attention paid to stability. Please don't use it just yet (but I'd love your help building it).
 
