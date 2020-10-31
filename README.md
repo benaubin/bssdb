@@ -1,16 +1,18 @@
 # BSSDB
 
-B-Tree on Seakless Storage Database.
+An embedded database library for KV databases, designed for modern hardware, distributed systems and data with natural sharding.
+
+This is an extremely early stage, without any tests or attention paid to stability. Please don't use it just yet (but I'd love your help building it).
 
 ## Goals
 
 - Support running many small-to-mid sized isolated databases in a single process
 - Scale well for naturally sharded data
-- Make replicating writes (even across devices) really fast when only one writing thread exists globally
-- Support a packed encoding for sending changes and snapshots over the network
-- Be very performant on SSDs
-- Consistent reads
-- Atomic write batches
+- Make replicating writes (even across devices) really fast when only one writing thread exists globally (by only requiring a search to perform a write on the leader, not replicas)
+- Support an efficient encoding for sending changes and snapshots over the network
+- Be very performant on modern SSDs
+- Point-in-time consistent reads
+- Atomic writes within a database
 
 ## Non-goals
 
