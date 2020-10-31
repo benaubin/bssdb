@@ -29,6 +29,7 @@ Your use of this library may be subject to the GPL, where the GPL applies.
 
 ### Alternative backronyms:
 
+- B-Tree on speedy SSDs database.
 - Ben's super substandard database.
 - Basic singe-threaded sendable-write database
 - Boring slow sad database
